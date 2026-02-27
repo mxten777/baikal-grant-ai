@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # Database
+  db:
+    image: postgres:15-alpine
+    container_name: baikal_db
+    restart: always
+    environment:
+      POSTGRES_USER: baikal_user
+      POSTGRES_PASSWORD: baikal_password
+      POSTGRES_DB: baikal_grant_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database:/docker-entrypoint-initdb.d
+    networks:
+      - baikal_net
+
+  # Object Storage (MinIO) - S3 Compatible for On-premise
+  minio:
+    image: minio/minio:latest
+    container_name: baikal_minio
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - baikal_net
+
+  # Backend (FastAPI)
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: baikal_backend
+    restart: always
+    command: >
+      sh -c "python create_admin.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://baikal_user:baikal_password@db:5432/baikal_grant_db
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: baikal-files
+    depends_on:
+      - db
+      - minio
+    networks:
+      - baikal_net
+
+  # Frontend (Vite + React)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: baikal_frontend
+    restart: always
+    ports:
+      - "3000:80"
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      - backend
+    networks:
+      - baikal_net
+
+volumes:
+  postgres_data:
+  minio_data:
+
+networks:
+  baikal_net:
+    driver: bridge
