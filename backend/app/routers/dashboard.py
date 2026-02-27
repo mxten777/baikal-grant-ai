@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, case, cast, Float
+from typing import Optional
 from datetime import datetime, timedelta
 from app import models
 from app.auth import require_admin
@@ -58,33 +59,36 @@ def get_dashboard_summary(
 
 @router.get("/recent-applications")
 def get_recent_applications(
-    limit: int = 10,
+    limit: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db),
     admin: models.User = Depends(require_admin),
 ):
+    """최근 신청서 — joinedload로 N+1 해결"""
     apps = (
         db.query(models.Application)
+        .options(
+            joinedload(models.Application.user),
+            joinedload(models.Application.program),
+        )
         .order_by(models.Application.updated_at.desc())
         .limit(limit)
         .all()
     )
 
-    result = []
-    for a in apps:
-        user = db.query(models.User).filter(models.User.id == a.user_id).first()
-        program = db.query(models.Program).filter(models.Program.id == a.program_id).first()
-        result.append({
+    return [
+        {
             "id": a.id,
             "application_number": a.application_number,
             "program_id": a.program_id,
-            "program_title": program.title if program else "",
+            "program_title": a.program.title if a.program else "",
             "user_id": a.user_id,
-            "user_name": user.full_name if user else "",
+            "user_name": a.user.full_name if a.user else "",
             "status": a.status,
             "submission_date": a.submission_date,
             "updated_at": a.updated_at,
-        })
-    return result
+        }
+        for a in apps
+    ]
 
 
 @router.get("/program-stats")
@@ -92,53 +96,69 @@ def get_program_stats(
     db: Session = Depends(get_db),
     admin: models.User = Depends(require_admin),
 ):
-    """각 프로그램별 신청 통계"""
-    programs = db.query(models.Program).all()
-    result = []
-    for p in programs:
-        app_count = db.query(func.count(models.Application.id)).filter(
-            models.Application.program_id == p.id
-        ).scalar()
-        approved = db.query(func.count(models.Application.id)).filter(
-            models.Application.program_id == p.id,
-            models.Application.status.in_(["approved", "completed"]),
-        ).scalar()
-        result.append({
+    """각 프로그램별 신청 통계 — 서브쿼리로 N+1 해결"""
+    app_counts = (
+        db.query(
+            models.Application.program_id,
+            func.count(models.Application.id).label("app_count"),
+            func.sum(
+                case(
+                    (models.Application.status.in_(["approved", "completed"]), 1),
+                    else_=0,
+                )
+            ).label("approved_count"),
+        )
+        .group_by(models.Application.program_id)
+        .subquery()
+    )
+
+    programs = (
+        db.query(models.Program, app_counts.c.app_count, app_counts.c.approved_count)
+        .outerjoin(app_counts, models.Program.id == app_counts.c.program_id)
+        .all()
+    )
+
+    return [
+        {
             "id": p.id,
             "title": p.title,
             "status": p.status,
             "budget_amount": float(p.budget_amount) if p.budget_amount else 0,
-            "application_count": app_count,
-            "approved_count": approved,
-        })
-    return result
+            "application_count": cnt or 0,
+            "approved_count": approved or 0,
+        }
+        for p, cnt, approved in programs
+    ]
 
 
 @router.get("/activity-logs")
 def get_activity_logs(
-    limit: int = 15,
+    limit: int = Query(15, ge=1, le=100),
     db: Session = Depends(get_db),
     admin: models.User = Depends(require_admin),
 ):
-    """최근 활동 로그 (워크플로우 이력)"""
+    """최근 활동 로그 — joinedload로 N+1 해결"""
     logs = (
         db.query(models.WorkflowLog)
+        .options(
+            joinedload(models.WorkflowLog.application),
+            joinedload(models.WorkflowLog.actor),
+        )
         .order_by(models.WorkflowLog.created_at.desc())
         .limit(limit)
         .all()
     )
-    result = []
-    for log in logs:
-        actor = db.query(models.User).filter(models.User.id == log.actor_id).first()
-        app = db.query(models.Application).filter(models.Application.id == log.application_id).first()
-        result.append({
+
+    return [
+        {
             "id": log.id,
-            "application_number": app.application_number if app else "",
-            "actor_name": actor.full_name if actor else "",
+            "application_number": log.application.application_number if log.application else "",
+            "actor_name": log.actor.full_name if log.actor else "",
             "action": log.action,
             "previous_status": log.previous_status,
             "new_status": log.new_status,
             "comments": log.comments,
             "created_at": log.created_at,
-        })
-    return result
+        }
+        for log in logs
+    ]

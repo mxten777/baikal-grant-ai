@@ -1,5 +1,6 @@
 import os
-from datetime import datetime, timedelta
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -9,12 +10,30 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models
 
-SECRET_KEY = os.getenv("SECRET_KEY", "baikal-grant-ai-secret-key-change-in-production")
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    import secrets
+    SECRET_KEY = secrets.token_urlsafe(32)
+    print("⚠️  WARNING: SECRET_KEY not set. Generated random key. Set SECRET_KEY env var in production!")
+
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 8  # 8 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("TOKEN_EXPIRE_MINUTES", "120"))  # 2 hours default
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
+
+# ─── Password Policy ─────────────────────────────────────
+PASSWORD_MIN_LENGTH = 8
+
+def validate_password(password: str) -> str:
+    """비밀번호 정책 검증: 최소 8자, 영문+숫자 포함"""
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise HTTPException(status_code=400, detail=f"비밀번호는 최소 {PASSWORD_MIN_LENGTH}자 이상이어야 합니다")
+    if not re.search(r'[A-Za-z]', password):
+        raise HTTPException(status_code=400, detail="비밀번호에 영문자가 포함되어야 합니다")
+    if not re.search(r'[0-9]', password):
+        raise HTTPException(status_code=400, detail="비밀번호에 숫자가 포함되어야 합니다")
+    return password
 
 
 def hash_password(password: str) -> str:
@@ -27,7 +46,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 

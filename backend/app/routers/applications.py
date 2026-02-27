@@ -1,9 +1,9 @@
 import os
 import uuid
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from app import models, schemas
 from app.auth import get_current_user, require_admin
 from app.database import get_db
@@ -12,7 +12,29 @@ from app.utils.pdf import generate_application_pdf
 
 router = APIRouter()
 
-STATUS_FLOW = ["draft", "submitted", "under_review", "revision_requested", "approved", "rejected", "completed"]
+VALID_STATUSES = {"draft", "submitted", "under_review", "revision_requested", "approved", "rejected", "completed"}
+
+# ─── 상태 전이 규칙 (Critical #6) ────────────────────────────
+ALLOWED_TRANSITIONS = {
+    "submitted": {"under_review", "revision_requested", "rejected"},
+    "under_review": {"approved", "rejected", "revision_requested"},
+    "revision_requested": {"submitted"},  # 사용자 재제출 시
+    "approved": {"completed"},
+    # rejected, completed, draft → 전이 불가 (관리자)
+}
+
+# ─── 파일 업로드 제한 (Critical #4) ──────────────────────────
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+ALLOWED_EXTENSIONS = {".pdf", ".hwp", ".hwpx", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+                      ".jpg", ".jpeg", ".png", ".gif", ".zip", ".csv"}
+ALLOWED_MIMETYPES = {
+    "application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/haansofthwp", "application/x-hwp", "application/octet-stream",
+    "image/jpeg", "image/png", "image/gif",
+    "application/zip", "text/csv",
+}
 
 
 def generate_app_number(program_id: int, app_id: int) -> str:
@@ -71,7 +93,7 @@ def submit_application(
 
     prev_status = application.status
     application.status = "submitted"
-    application.submission_date = datetime.utcnow()
+    application.submission_date = datetime.now(timezone.utc)
 
     log = models.WorkflowLog(
         application_id=application.id,
@@ -103,6 +125,26 @@ async def upload_application_file(
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
 
+    # ─── 파일 검증 (Critical #4) ───
+    # 확장자 검증
+    ext = os.path.splitext(file.filename or "")[-1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"허용되지 않는 파일 형식입니다: {ext}. 허용: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
+
+    # MIME 타입 검증
+    if file.content_type and file.content_type not in ALLOWED_MIMETYPES:
+        raise HTTPException(status_code=400, detail=f"허용되지 않는 파일 타입입니다: {file.content_type}")
+
+    # 파일 크기 검증 (읽기 전 size 헤더 확인)
+    content = await file.read()
+    file_size = len(content)
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail=f"파일 크기가 {MAX_FILE_SIZE // (1024*1024)}MB를 초과합니다")
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="빈 파일은 업로드할 수 없습니다")
+
+    # 파일 포인터 리셋 후 업로드
+    await file.seek(0)
     file_path = await upload_file(file, f"applications/{app_id}")
 
     app_file = models.ApplicationFile(
@@ -111,30 +153,34 @@ async def upload_application_file(
         file_name=file.filename,
         file_path=file_path,
         file_type=file.content_type,
-        file_size=0,
+        file_size=file_size,
     )
     db.add(app_file)
     db.commit()
     db.refresh(app_file)
-    return {"file_id": app_file.id, "file_path": file_path}
+    return {"file_id": app_file.id, "file_path": file_path, "file_size": file_size}
 
 
-# ─── User: My applications ────────────────────────────────────
+# ─── User: My applications (with pagination) ─────────────────
 @router.get("/my", response_model=List[schemas.ApplicationOut])
 def my_applications(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     return db.query(models.Application).filter(
         models.Application.user_id == current_user.id
-    ).order_by(models.Application.updated_at.desc()).all()
+    ).order_by(models.Application.updated_at.desc()).offset(skip).limit(limit).all()
 
 
-# ─── Admin: List all applications ─────────────────────────────
+# ─── Admin: List all applications (with pagination + validation) ─
 @router.get("/admin/all", response_model=List[schemas.ApplicationOut])
 def list_all_applications(
-    program_id: int = None,
-    status: str = None,
+    program_id: Optional[int] = None,
+    status: Optional[str] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     admin: models.User = Depends(require_admin),
 ):
@@ -142,11 +188,13 @@ def list_all_applications(
     if program_id:
         query = query.filter(models.Application.program_id == program_id)
     if status:
+        if status not in VALID_STATUSES:
+            raise HTTPException(status_code=400, detail=f"유효하지 않은 상태: {status}")
         query = query.filter(models.Application.status == status)
-    return query.order_by(models.Application.updated_at.desc()).all()
+    return query.order_by(models.Application.updated_at.desc()).offset(skip).limit(limit).all()
 
 
-# ─── Admin: Update status ─────────────────────────────────────
+# ─── Admin: Update status (with transition validation) ────────
 @router.put("/admin/{app_id}/status", response_model=schemas.ApplicationOut)
 def update_status(
     app_id: int,
@@ -158,8 +206,18 @@ def update_status(
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
 
+    # ─── 상태 전이 검증 (Critical #6) ───
+    current_status = application.status
+    new_status = status_in.status
+    allowed = ALLOWED_TRANSITIONS.get(current_status, set())
+    if new_status not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{current_status}' → '{new_status}' 전이가 허용되지 않습니다. 허용: {sorted(allowed) if allowed else '없음'}"
+        )
+
     prev_status = application.status
-    application.status = status_in.status
+    application.status = new_status
 
     log = models.WorkflowLog(
         application_id=application.id,

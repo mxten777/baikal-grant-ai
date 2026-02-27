@@ -1,14 +1,22 @@
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Optional, List, Any
 from datetime import datetime
 
 
-# ─── Auth ─────────────────────────────────────────
+# ─── Auth ─────────────────────────────────────────────
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
+    password: str  # 검증은 auth router에서 수행
     full_name: str
-    role: Optional[str] = "user"
+    # role 필드 제거 — 회원가입 시 항상 'user'로 고정
+
+    @field_validator('full_name')
+    @classmethod
+    def validate_full_name(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 1 or len(v) > 50:
+            raise ValueError('이름은 1~50자 이내여야 합니다')
+        return v
 
 
 class UserOut(BaseModel):
@@ -41,7 +49,20 @@ class ProgramCreate(BaseModel):
     apply_end_date: Optional[datetime] = None
     budget_amount: Optional[float] = None
     status: Optional[str] = "draft"
+    @field_validator('title')
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 2 or len(v) > 200:
+            raise ValueError('사업명은 2~200자 이내여야 합니다')
+        return v
 
+    @field_validator('status')
+    @classmethod
+    def validate_status(cls, v: Optional[str]) -> Optional[str]:
+        if v and v not in ('draft', 'active', 'closed'):
+            raise ValueError('상태는 draft, active, closed 중 하나여야 합니다')
+        return v
 
 class ProgramUpdate(ProgramCreate):
     pass
@@ -102,6 +123,14 @@ class ApplicationCreate(BaseModel):
 class StatusUpdate(BaseModel):
     status: str
     comments: Optional[str] = None
+
+    @field_validator('status')
+    @classmethod
+    def validate_status(cls, v: str) -> str:
+        allowed = {'submitted', 'under_review', 'revision_requested', 'approved', 'rejected', 'completed'}
+        if v not in allowed:
+            raise ValueError(f'유효하지 않은 상태입니다: {v}')
+        return v
 
 
 class ApplicationFileOut(BaseModel):

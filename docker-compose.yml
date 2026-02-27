@@ -6,10 +6,11 @@ services:
     image: postgres:15-alpine
     container_name: baikal_db
     restart: always
+    env_file: .env
     environment:
-      POSTGRES_USER: baikal_user
-      POSTGRES_PASSWORD: baikal_password
-      POSTGRES_DB: baikal_grant_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
@@ -17,6 +18,11 @@ services:
       - ./database:/docker-entrypoint-initdb.d
     networks:
       - baikal_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Object Storage (MinIO) - S3 Compatible for On-premise
   minio:
@@ -24,9 +30,10 @@ services:
     container_name: baikal_minio
     restart: always
     command: server /data --console-address ":9001"
+    env_file: .env
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -34,6 +41,11 @@ services:
       - minio_data:/data
     networks:
       - baikal_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Backend (FastAPI)
   backend:
@@ -43,20 +55,23 @@ services:
     container_name: baikal_backend
     restart: always
     command: >
-      sh -c "python create_admin.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
-    volumes:
-      - ./backend:/app
+      sh -c "python create_admin.py && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
+    env_file: .env
     environment:
-      DATABASE_URL: postgresql://baikal_user:baikal_password@db:5432/baikal_grant_db
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SECRET_KEY: ${SECRET_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       S3_ENDPOINT: http://minio:9000
-      S3_ACCESS_KEY: minioadmin
-      S3_SECRET_KEY: minioadmin
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       S3_BUCKET: baikal-files
     depends_on:
-      - db
-      - minio
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     networks:
       - baikal_net
 
@@ -69,8 +84,6 @@ services:
     restart: always
     ports:
       - "3000:80"
-    volumes:
-      - ./frontend/src:/app/src
     depends_on:
       - backend
     networks:

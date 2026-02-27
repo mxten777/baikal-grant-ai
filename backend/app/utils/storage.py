@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import io
 from pathlib import Path
@@ -16,6 +17,16 @@ S3_SECURE = os.getenv("S3_SECURE", "false").lower() == "true"
 
 _minio_client = None
 
+# 파일명 위생 처리 패턴
+_SAFE_FILENAME_RE = re.compile(r"[^\w\-.]")
+
+
+def _sanitize_filename(filename: str) -> str:
+    """파일명에서 위험 문자를 제거"""
+    name = os.path.basename(filename)  # path traversal 방지
+    name = _SAFE_FILENAME_RE.sub("_", name)
+    return name
+
 
 def _get_minio():
     global _minio_client
@@ -26,7 +37,8 @@ def _get_minio():
 
 
 async def upload_file(file: UploadFile, folder: str = "uploads") -> str:
-    ext = os.path.splitext(file.filename or "file")[-1]
+    safe_name = _sanitize_filename(file.filename or "file")
+    ext = os.path.splitext(safe_name)[-1]
     object_name = f"{folder}/{uuid.uuid4().hex}{ext}"
     content = await file.read()
 

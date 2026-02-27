@@ -30,7 +30,7 @@ class Program(Base):
     apply_end_date = Column(DateTime(timezone=True))
     budget_amount = Column(Numeric(15, 2))
     status = Column(String(50), default="draft")  # draft, active, closed
-    created_by = Column(Integer, ForeignKey("users.id"))
+    created_by = Column(Integer, ForeignKey("users.id"), index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -42,10 +42,7 @@ class Form(Base):
     __tablename__ = "forms"
 
     id = Column(Integer, primary_key=True, index=True)
-    program_id = Column(Integer, ForeignKey("programs.id", ondelete="CASCADE"))
-    title = Column(String(255), nullable=False)
-    description = Column(Text)
-    is_active = Column(Boolean, default=True)
+    program_id = Column(Integer, ForeignKey("programs.id", ondelete="CASCADE"), index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -57,8 +54,7 @@ class FormField(Base):
     __tablename__ = "form_fields"
 
     id = Column(Integer, primary_key=True, index=True)
-    form_id = Column(Integer, ForeignKey("forms.id", ondelete="CASCADE"))
-    field_type = Column(String(50), nullable=False)  # text, number, select, checkbox, date, file, agreement
+    form_id = Column(Integer, ForeignKey("forms.id", ondelete="CASCADE"), index=True)  # text, number, select, checkbox, date, file, agreement
     label = Column(String(255), nullable=False)
     name = Column(String(100), nullable=False)
     description = Column(Text)
@@ -74,8 +70,8 @@ class Application(Base):
     __tablename__ = "applications"
 
     id = Column(Integer, primary_key=True, index=True)
-    program_id = Column(Integer, ForeignKey("programs.id"))
-    user_id = Column(Integer, ForeignKey("users.id"))
+    program_id = Column(Integer, ForeignKey("programs.id"), index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
     status = Column(String(50), default="draft")
     # draft, submitted, under_review, revision_requested, approved, rejected, completed
     submission_date = Column(DateTime(timezone=True))
@@ -93,9 +89,8 @@ class ApplicationAnswer(Base):
     __tablename__ = "application_answers"
 
     id = Column(Integer, primary_key=True, index=True)
-    application_id = Column(Integer, ForeignKey("applications.id", ondelete="CASCADE"))
-    field_id = Column(Integer, ForeignKey("form_fields.id"))
-    value = Column(Text)
+    application_id = Column(Integer, ForeignKey("applications.id", ondelete="CASCADE"), index=True)
+    field_id = Column(Integer, ForeignKey("form_fields.id"), index=True)
     value_json = Column(JSON)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -107,8 +102,8 @@ class ApplicationFile(Base):
     __tablename__ = "application_files"
 
     id = Column(Integer, primary_key=True, index=True)
-    application_id = Column(Integer, ForeignKey("applications.id", ondelete="CASCADE"))
-    field_id = Column(Integer, ForeignKey("form_fields.id"), nullable=True)
+    application_id = Column(Integer, ForeignKey("applications.id", ondelete="CASCADE"), index=True)
+    field_id = Column(Integer, ForeignKey("form_fields.id"), nullable=True, index=True)
     file_name = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)
     file_type = Column(String(100))
@@ -122,8 +117,8 @@ class WorkflowLog(Base):
     __tablename__ = "workflow_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    application_id = Column(Integer, ForeignKey("applications.id", ondelete="CASCADE"))
-    actor_id = Column(Integer, ForeignKey("users.id"))
+    application_id = Column(Integer, ForeignKey("applications.id", ondelete="CASCADE"), index=True)
+    actor_id = Column(Integer, ForeignKey("users.id"), index=True)
     action = Column(String(50), nullable=False)
     previous_status = Column(String(50))
     new_status = Column(String(50))
